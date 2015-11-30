@@ -776,7 +776,7 @@ for ID, group : groups {
                         includeColumns = group.samples,
                         includeColumns = "RowName",
                         colOrder       = true,
-                        @name          = "exprMatrix_"+ID,
+                        @name          = "exprMatrix_" + std.quote(ID, type="Anduril"),
                         @keep          = false)
   groupExprG = IDConvert(csv              = groupExpr,
                          conversionTable  = geneNames,
