@@ -13,7 +13,6 @@ runNetwork = true
 //--- INPUT DATA
 //------------------------------------------------------------------------------------------------
 
-inputBamDir       = INPUT(path="/mnt/biowaste/data/modicell/sarah", recursive=false)
 inputSamples      = INPUT(path="/mnt/projects/sarah/data/sample_key.csv")
 inputSampleGroups = INPUT(path="/mnt/projects/sarah/data/sample_groups.csv")
 inputComparisons  = INPUT(path="/mnt/projects/sarah/data/comparisons.csv")
@@ -41,7 +40,6 @@ hyperlinkRuleEnsemblGeneCards = StringInput(content=
 //--- PRELUDE
 //------------------------------------------------------------------------------------------------
 
-inputBamFiles     = Folder2Array(folder1 = inputBamDir, filePattern = "C4H29ACXX_([^_]+)_.*[.]bam$")
 moksiskaanInit = MoksiskaanInit(showLog='EnsemblImport,PathwayCommonsImport,PINAImport,WikiPathways')
 ensemblRef = XrefLinkRule(moksiskaan = moksiskaanInit.connection, columns = "Ensembl=Ensembl", xrefTypes  = XrefType_Ensembl_gene)
 
@@ -67,7 +65,13 @@ for entry : std.itercsv(inputSamples)
 	samples[""+entry.ID] =
 	{
 		'alias' = entry.Alias,
-		'description' = entry.Description
+		'description' = entry.Description,
+		'file' = entry.File,
+		'exclude' = false
+	}
+	
+	if (entry.Exclude == "Yes" || entry.Exclude == "YES" || entry.Exclude == "yes") {
+		samples[""+entry.ID]["exclude"] = true
 	}
 }
 
@@ -75,12 +79,24 @@ for entry : std.itercsv(inputSamples)
 //--- SAMPLE GROUPS
 //------------------------------------------------------------------------------------------------
 
-sampleGroups = TableQuery
+removeExcludedSamples = REvaluate
 (
-	table1 = inputSampleGroups @require,
-	query  = '''SELECT * FROM table1 ORDER BY "ID"'''
+	table1 = inputSamples,
+	table2 = inputSampleGroups,
+	script = StringInput(content='''
+		excluded <- table1$Alias[toupper(table1$Exclude)=="YES"]
+		table2$Members <- as.character(table2$Members)
+		
+		for (i in 1:nrow(table2)) {
+		  m.old <- unlist(strsplit(table2$Members[i], ","))
+		  m.new <- m.old[!m.old %in% excluded]
+		  table2$Members[i] <- paste(m.new, collapse=",")
+		}
+		
+		table.out <- table2
+	''')
 )
-
+sampleGroups = removeExcludedSamples.table
 sampleGroupsUnique = CSVFilter(csv=sampleGroups, regexp="ID=CTLA4Igd1|CTLA4Igd3|aCD28d1|aCD28d3|Baseline|wod1|wod3")
 
 //------------------------------------------------------------------------------------------------
@@ -116,6 +132,7 @@ for comparison : std.itercsv(inputComparisons)
 		'caseG'       = gCase,
 		'controlG'    = gControl,
 		'otherG'      = comparison.NonMembers,
+		'design'      = comparison.design,
 		'sampleIdLst' = sampleIdLst.ids,
 		'sampleIds'   = std.strReplace(std.fRead(sampleIdLst.ids), "\n", ",", "^[^,]+,(.*)", "$1", ",$", ""),
 		'fcLimit'     = comparison.fcLimit,
@@ -130,7 +147,7 @@ for comparison : std.itercsv(inputComparisons)
 //--- EXPERIMENTAL SETUP REPORT
 //------------------------------------------------------------------------------------------------
 
-include "/mnt/projects/iamp/scripts/anduril/experimentalSetup.and"
+include "/mnt/projects/sarah/anduril/includes/experimentalSetup.and"
 
 experimentReport = experimentalSetupReport
 (
@@ -146,22 +163,25 @@ experimentReport = experimentalSetupReport
 //------------------------------------------------------------------------------------------------
 
 alignedBams = record()
-for bam : std.iterArray(inputBamFiles) 
+for id, sample : samples 
 {
-	@out.alignment.filename = bam.key + '.gsnap.sorted.dupmarked.bam'
+	@out.alignment.filename = sample.alias + '.gsnap.sorted.dupmarked.bam'
 	gsnap = GSNAP
 	(
-		reads      = INPUT(path=bam.file),
+		reads     = INPUT(path=sample.file), 
 		executable = "gsnapl", 
 		options    = "--db=mouse_GRCm38 --dir=/data_synology/anduril/docker-images/anduril-gsnap_2014_12_28-human_g1k_v37/db/mouse_GRCm38 --use-splicing=Mus_musculus.GRCm38.81.splicesites --nthreads 15 --maxsearch=100 --npaths=1 --max-mismatches=1 --novelsplicing=0 --batch=4 --genome-unk-mismatch=0",
-		docker     = "biowaste:5000/anduril/gsnap",
-		@cpu       = 15, 
-		@memory    = 20000,
-		@execute   = "once",
-		@name      = "gsnap_" + bam.key 
+		docker    = "biowaste:5000/anduril/gsnap",
+		inputType = "auto",
+		@cpu      = 15, 
+		@memory   = 20000,
+		@name     = "gsnap_" + sample.alias,
+		@execute  = "once" 
 	)
-	alias = samples[bam.key+""].alias
-	alignedBams[alias] = gsnap.alignment
+
+	if (!sample.exclude) {
+		alignedBams[sample.alias] = gsnap.alignment
+	}
 }
 
 //------------------------------------------------------------------------------------------------
@@ -201,7 +221,7 @@ deseqExprMatrix = DESeqExpr
 //--- QUALITY CONTROL
 //------------------------------------------------------------------------------------------------
 
-include "/mnt/projects/iamp/scripts/anduril/qc.and"
+include "/mnt/projects/sarah/anduril/includes/qc.and"
 
 qcReport  = getQCReport
 (
@@ -249,32 +269,57 @@ for ID, comparison : comparisons
 	    caseGroup               = comparison.caseG,
 	    controlGroup            = comparison.controlG,
 	    otherGroups             = comparison.otherG,
-		design                  = "~ Mouse + group",
+		design                  = comparison.design,
 	    colSuffix               = ID,
 	    minReplicatesForReplace = 7,
 	    @name                   = "deseq_" + std.quote(ID, type="Anduril")
 	)
 	degAllLst[ID] = deseq.results
 		
+	// annotate deseq output with gene names, locations, and descriptions 
+	quotedSampleIds = 'G."' + std.strReplace(comparison.sampleIds, ',', '", G."') + '"'	
+	deseqAnnotated = TableQuery
+	(
+		table1 = deseq     @require,
+		table2 = geneNames @require,
+		table3 = geneAnnot @require,
+		query  = '''
+			SELECT G."ids"                        AS "ids",
+			A."Gene"                              AS "Gene",
+			SUBSTR(D."Description", 1, 65)        AS "Description",
+			D."Chromosome Name"                   AS "chr",
+			D."Gene Start (bp)"                   AS "start",
+			D."Gene End (bp)"                     AS "end",
+			CONCAT(D."Chromosome Name", D."Band") AS "Band",
+			G."meanExprE'''+ID+'''"               AS "meanA",
+			G."meanExprC'''+ID+'''"               AS "meanB",
+			G."fc'''+ID+'''"                      AS "fc",
+			G."p'''+ID+'''"                       AS "p",
+			G."q'''+ID+'''"                       AS "q",
+			CASEWHEN(G."fc'''+ID+'''" > 0, 1, -1) AS "status",
+			'''+quotedSampleIds+'''
+			FROM table1 G
+				LEFT OUTER JOIN table2 AS A ON (G."ids" = A."Ensembl")
+				LEFT OUTER JOIN table3 AS D ON (G."ids" = D."Ensembl Gene ID")
+			ORDER BY ABS("fc") DESC, "q"
+		''',
+		@name  = "deseqAnnotated_" + std.quote(ID, type="Anduril")
+	)
+		
 	// subset statistically significant DEGs
 	degCalled = TableQuery
 	(
-		table1 = deseq @require,
+		table1 = deseqAnnotated @require,
 		query  = 
 			"""
-			SELECT DISTINCT "ids"                 AS "ids", 
-			                "fc"""+ID+""""        AS "fc", 
-			                "meanExprE"""+ID+"""" AS "meanExprE", 
-			                "meanExprC"""+ID+"""" AS "meanExprC", 
-			                "p"""+ID+""""         AS "p", 
-			                "q"""+ID+""""         AS "q" 
+			SELECT DISTINCT *
 			FROM   table1
-				WHERE  (ABS("fc"""+ID+"""")    >= """ + comparison.fcLimit + """) AND
-					   ("p"""+ID+""""          <= """ + comparison.pLimit  + """) AND
-					   ("q"""+ID+""""          <= """ + comparison.qLimit  + """) AND
-					   (("meanExprE"""+ID+"""" >= """ + comparison.exprLimit + """) OR
-					   ("meanExprC"""+ID+""""  >= """ + comparison.exprLimit + """))
-					   ORDER  BY 1
+				WHERE  (ABS("fc") >= """ + comparison.fcLimit + """) AND
+					   ("p"       <= """ + comparison.pLimit  + """) AND
+					   ("q"       <= """ + comparison.qLimit  + """) AND
+					   (("meanA"  >= """ + comparison.exprLimit + """) OR
+					   ( "meanB"  >= """ + comparison.exprLimit + """))
+					   ORDER BY ABS("fc") DESC, "q"
 			""",
 			@name  = "degCalled_" + std.quote(ID, type="Anduril")
 	)
@@ -285,11 +330,11 @@ for ID, comparison : comparisons
 //--- DEG REPORTS
 //------------------------------------------------------------------------------------------------
 
-include "/mnt/projects/iamp/scripts/anduril/degTable.and"
-include "/mnt/projects/iamp/scripts/anduril/degBoxPlot.and"
-include "/mnt/projects/iamp/scripts/anduril/goClustering.and"
-include "/mnt/projects/iamp/scripts/anduril/goEnrichment.and"
-include "/mnt/projects/iamp/scripts/anduril/expressionHeatmap.and"
+include "/mnt/projects/sarah/anduril/includes/degTable.and"
+include "/mnt/projects/sarah/anduril/includes/degBoxPlot.and"
+include "/mnt/projects/sarah/anduril/includes/goClustering.and"
+include "/mnt/projects/sarah/anduril/includes/goEnrichment.and"
+include "/mnt/projects/sarah/anduril/includes/expressionHeatmap.and"
 
 degReportLst = record()
 deseqColumnTypes = StringInput(content="Table\tColumn\tType\ntable1\tfc\tDOUBLE\ntable1\tstatus\tINTEGER\n")  // required if degTable is empty (= no significant DEGs)
@@ -653,9 +698,32 @@ combinedPDF = LatexPDF
 OUTPUT(combinedPDF.document)
 
 //------------------------------------------------------------------------------------------------
+//--- EXCEL FILES WITH DIFFERENTIALLY EXPRESSED GENES
+//------------------------------------------------------------------------------------------------
+
+include "/mnt/projects/sarah/anduril/includes/degExcel.and"
+
+degExcel = degExcelOutput
+(
+	degTables   = degCalledLst,
+	degAllLst   = degAllLst,
+	linkRule    = ensemblRef,
+	geneNames   = geneNames,
+	geneAnnot   = geneAnnot,
+	comparisons  = comparisons,
+	fdrCutoff    = 1
+)
+	
+@out.out.filename = shortName + "-DE-genes.xls"
+OUTPUT(degExcel.degs)
+
+@out.out.filename = shortName + "-all-genes.xls"
+OUTPUT(degExcel.allGenes)
+
+//------------------------------------------------------------------------------------------------
 //--- GENE SET ENRICHMENT ANALYSIS (GSEA)
 //------------------------------------------------------------------------------------------------
-include "gsea.and"
+include "/mnt/projects/sarah/anduril/includes/gsea.and"
 
 // produce RNK files for each comparison
 
