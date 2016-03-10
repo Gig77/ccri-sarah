@@ -6,7 +6,7 @@ authors = "Christian Frech and Marko Laakso"
 //--- INCLUDED REPORTS
 //------------------------------------------------------------------------------------------------
 
-runGSEA = true
+runGSEA = false
 runNetwork = true
 
 //------------------------------------------------------------------------------------------------
@@ -233,7 +233,8 @@ qcReport  = getQCReport
     force groups           = sampleGroupsUnique,
     force inputSamples     = inputSamples,
     genome                 = "mouse/mm10",
-    readStatsYMax          = 45
+    readStatsYMax          = 45,
+    includeGCBias          = false
 )
 
 //------------------------------------------------------------------------------------------------
@@ -416,24 +417,15 @@ for ID, comparison : comparisons
 
 	//--- EXPRESSION HEATMAP --------------------------------------------------------------------------//
 
-	exprMatrixFiltered = CSVFilter
-	(
-		csv            = deseqExprMatrix.expr,
-		auxiliary      = degCalledLst[ID] @require,
-		includeColumns = comparison.sampleIdLst,
-		includeColumns = "RowName",
-		colOrder       = true,
-		@name          = "exprMatrix_" + std.quote(ID, type="Anduril")
-	)                      
-
 	exprHeatmap = getHeatmapReport
 	(
-		exprMatrix  = exprMatrixFiltered,
-		geneNames   = geneNames,
-		group       = comparison,
-		sectionType = "subsubsection",
-		cexRow      = 0.5,
-		@name       = "heatmap" + ID
+		exprMatrix   = deseqExprMatrix.expr,
+		degCalled    = degCalledLst[ID],
+		geneNames    = geneNames,
+		sampleGroups = sampleGroups,
+		comparison   = comparison,
+		sectionType  = "subsubsection",
+		@name        = "heatmap" + ID
 	)
 
 	//--- GO ENRICHMENT -------------------------------------------------------------------------------//
