@@ -3,7 +3,7 @@ SHELL=/bin/bash  # required to make pipefail work
 .SECONDARY:      # do not delete any intermediate files
 LOG = perl -ne 'use POSIX qw(strftime); $$|=1; print strftime("%F %02H:%02M:%S ", localtime), $$ARGV[0], "$@: $$_";'
 
-PROJECT_HOME=~/sarah
+PROJECT_HOME=/mnt/projects/sarah
 TRIM_BEFORE_BASE=1
 
 BASELINE=C4H29ACXX_m1d0_14s005555-1-1_Heitger_lane114s005555_sequence \
@@ -54,5 +54,5 @@ htseq/%.count: /data/modicell/sarah/qlucore/%.qlucore.bam /data/modicell/pub/Mus
 	~/tools/HTSeq-0.6.1/scripts/htseq-count -f bam -t exon -s no $< $(word 2, $^)  | grep -vP "^__" > $@.part
 	mv $@.part $@
 	
-/data/modicell/sarah/qlucore/deseq2-normalized-counts.tsv: htseq ~/sarah/scripts/get-deseq2-transformed-counts.R
-	Rscript ~/sarah/scripts/get-deseq2-transformed-counts.R
+/data/modicell/sarah/qlucore/deseq2-normalized-counts.tsv: htseq $(PROJECT_HOME)/scripts/get-deseq2-transformed-counts.R
+	Rscript $(PROJECT_HOME)/scripts/get-deseq2-transformed-counts.R

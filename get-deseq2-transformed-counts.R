@@ -1,14 +1,14 @@
 options(warn=1)
 library("DESeq2")
 
-files <- list.files(path="~/sarah/results/htseq/", pattern=".count$")
+files <- list.files(path="/mnt/projects/sarah/results/htseq/", pattern=".count$")
 
 # remove samples from initial proof-of-principle project
 names <- gsub("C4H29ACXX_([^_]+)_.*", "\\1", files, perl=T)
 samples <- data.frame(name=names, file=files, stringsAsFactors=F)
 
 # transform counts into normalized values
-cds <- DESeqDataSetFromHTSeqCount(sampleTable=samples, directory="~/sarah/results/htseq", design=~1)
+cds <- DESeqDataSetFromHTSeqCount(sampleTable=samples, directory="/mnt/projects/sarah/results/htseq", design=~1)
 
 # regularized log transformation
 rld <- rlog(cds)
@@ -19,7 +19,7 @@ rlogMat <- assay(rld)
 #vstMat <- assay(vsd)
 
 # annotate genes with Ensembl biomart (mouse, not human!)
-biomartfile <- "~/sarah/data/ensembl/genes.GRCm38.75.biomart.RData"
+biomartfile <- "/mnt/projects/sarah/data/ensembl/genes.GRCm38.75.biomart.RData"
 if(file.exists(biomartfile)) {
 	load(biomartfile)
 } else {
